@@ -1,0 +1,68 @@
+name: Sync README from KAIHATU-Account-Link
+
+on:
+  schedule:
+    - cron: '0 * * * *'      # 1時間ごとに実行（UTC）
+  workflow_dispatch:          # 手動実行ボタン
+  repository_dispatch:        # 元リポジトリからの即時通知（手順5で使用・任意）
+    types: [readme-updated]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 元リポジトリのREADMEを取得
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}
+        run: |
+          gh api repos/Bishamon-G-Works/KAIHATU-Account-Link/readme \
+            -H "Accept: application/vnd.github.raw" > /tmp/source.md
+
+      - name: profile/README.md に差し込み
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+
+          REPO = "Bishamon-G-Works/KAIHATU-Account-Link"
+          BRANCH = "main"   # 元リポジトリの既定ブランチ名に合わせる
+          BLOB = f"https://github.com/{REPO}/blob/{BRANCH}/"
+          RAW  = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/"
+
+          def fix(url, base):
+              # http・#・mailto などはそのまま、相対パスだけ絶対URLに変換
+              if re.match(r'^(https?:|mailto:|#|//|data:)', url):
+                  return url
+              url = re.sub(r'^\./', '', url).lstrip('/')
+              return base + url
+
+          src = pathlib.Path("/tmp/source.md").read_text(encoding="utf-8")
+          # Markdown画像 ![alt](path)
+          src = re.sub(r'!\[([^\]]*)\]\(([^)\s]+)',
+                       lambda m: f'![{m.group(1)}]({fix(m.group(2), RAW)}', src)
+          # Markdownリンク [text](path)
+          src = re.sub(r'(?<!!)\[([^\]]*)\]\(([^)\s]+)',
+                       lambda m: f'[{m.group(1)}]({fix(m.group(2), BLOB)}', src)
+          # HTMLの src="" / href=""
+          src = re.sub(r'\bsrc="([^"]+)"',  lambda m: f'src="{fix(m.group(1), RAW)}"', src)
+          src = re.sub(r'\bhref="([^"]+)"', lambda m: f'href="{fix(m.group(1), BLOB)}"', src)
+
+          target = pathlib.Path("profile/README.md")
+          text = target.read_text(encoding="utf-8")
+          start, end = "<!-- KAIHATU-README:START -->", "<!-- KAIHATU-README:END -->"
+          new = re.sub(re.escape(start) + r".*?" + re.escape(end),
+                       lambda m: f"{start}\n{src.strip()}\n{end}",
+                       text, flags=re.DOTALL)
+          target.write_text(new, encoding="utf-8")
+          PY
+
+      - name: 変更があればコミット
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add profile/README.md
+          git diff --cached --quiet || (git commit -m "Sync README from KAIHATU-Account-Link" && git push)
